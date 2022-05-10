@@ -13,7 +13,7 @@ jobs:
     permissions:
       security-events: write
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - uses: securego/gosec@master
         with:
           # we let the report trigger content trigger a failure using the GitHub Security features.
