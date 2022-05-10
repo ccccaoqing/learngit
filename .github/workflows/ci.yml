@@ -1,0 +1,99 @@
+name: CI
+on:
+  push:
+    tags:
+      - v*
+    branches:
+      - main
+  pull_request:
+env:
+  GOPROXY: "https://proxy.golang.org"
+
+permissions:
+  # none-all, which doesn't exist, but
+  # https://docs.github.com/en/actions/reference/authentication-in-a-workflow#using-the-github_token-in-a-workflow
+  # implies that the token still gets created.  Elsewhere we learn that any
+  # permission not mentioned here gets turned to `none`.
+  actions: none
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-go@v2
+        with:
+          go-version: '^1.x'
+      - uses: actions/cache@v2.1.7
+        id: cache
+        with:
+          path: |
+            ~/go/pkg/mod              # Module download cache
+            ~/.cache/go-build         # Build cache (Linux)
+            ~/Library/Caches/go-build # Build cache (Mac)
+            '%LocalAppData%\go-build' # Build cache (Windows)      
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+      - name: install deps
+        if: steps.cache.output.cache-hit != 'true'
+        run: go mod download
+      - name: build
+        run: make --debug all
+      - name: test
+        run: |
+          mkdir -p test-results
+          # Don't use GITHUB_SHA as we need the head of the branch, not the
+          # secret merge commit of the PR itself.  https://help.github.com/en/actions/automating-your-workflow-with-github-actions/events-that-trigger-workflows#pull-request-event-pull_request
+          echo ${{ github.event.pull_request.head.sha }} > test-results/sha-number
+          make --debug junit-regtest TESTCOVERPROFILE=coverprofile
+      - uses: codecov/codecov-action@v2.1.0
+        if: always()
+        with:
+          file: coverprofile
+      - uses: actions/upload-artifact@v2
+        if: always()
+        with:
+          name: test-results
+          path: test-results/
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          fetch-depth: 0 # so that we get tags
+      - run: make --debug container
+
+  gosec:
+    runs-on: ubuntu-latest
+    env:
+      GO111MODULE: on
+    steps:
+      - uses: actions/checkout@v2
+      - uses: securego/gosec@master
+        with:
+          args: '-tags fuzz ./...'
+
+
+  fuzz:
+    runs-on: ubuntu-latest
+    container:
+      image: gcr.io/oss-fuzz-base/base-builder
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-go@v2
+        with:
+          go-version: '^1.x'
+      - uses: actions/cache@v2.1.7
+        id: cache
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+      - name: install deps
+        if: steps.cache.output.cache-hit != 'true'
+        run: make --debug install_deps
+      - name: local fuzz regtest
+        run: make --debug CXX=clang LIB_FUZZING_ENGINE=-fsanitize=fuzzer fuzz-regtest
